@@ -14,6 +14,27 @@ root. To use another directory, call `set_workspace` with an absolute path;
 the MCP client must support elicitation and the user must approve the exact
 path before the server switches roots.
 
+## Network transports
+
+Besides stdio (the default), the server exposes two network transports:
+
+```powershell
+# Streamable HTTP + SSE
+cargo run -- --http --addr 127.0.0.1:3000 C:\path\to\workspace
+
+# WebSocket
+cargo run -- --ws --addr 127.0.0.1:8080 C:\path\to\workspace
+```
+
+- `--http` serves the MCP protocol at `/mcp` over Streamable HTTP
+  (`POST /mcp` for JSON-RPC) with Server-Sent Events (`GET /mcp` with
+  `Accept: text/event-stream` for the streaming response channel). Each
+  session is isolated and rooted at the workspace path.
+- `--ws` serves one MCP session per WebSocket connection; every JSON-RPC
+  message travels in a WebSocket text frame.
+- `--addr` defaults to `127.0.0.1:3000` for HTTP and `127.0.0.1:8080` for
+  WebSocket.
+
 ## Tools
 
 - `read` — read a UTF-8 text file with line numbers.

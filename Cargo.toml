@@ -6,21 +6,29 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+axum = "0.8"
+futures-util = "0.3"
 nu-cmd-lang = { version = "0.115.1" }
 nu-command = { version = "0.115.1", default-features = false, features = ["os"] }
 nu-engine = { version = "0.115.1", default-features = false, features = ["os"] }
 nu-parser = { version = "0.115.1", default-features = false }
 nu-protocol = { version = "0.115.1", default-features = false, features = ["os"] }
-rmcp = { version = "3.4", features = ["elicitation", "server", "macros", "transport-io", "schemars"] }
+rmcp = { version = "3.4", features = ["elicitation", "server", "macros", "transport-io", "transport-streamable-http-server", "schemars"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+base64 = "0.22"
 tempfile = "3"
+
+[patch.crates-io]
+sse-stream = { path = "vendor/sse-stream" }
 
 [profile.release]
 opt-level = 3
