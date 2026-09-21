@@ -44,3 +44,14 @@ Example request shape:
   "timeout_ms": 10000
 }
 ```
+
+## Release build
+
+The release profile is optimized aggressively with fat LTO, one codegen unit,
+abort-on-panic, and stripped symbols. Build the Windows x86_64 executable with:
+
+```powershell
+cargo build --locked --release
+```
+
+The artifact is written to `target\release\gredit-mcp.exe`.
