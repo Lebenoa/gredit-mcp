@@ -2,6 +2,7 @@ use std::{
     fs, io,
     path::{Component, Path, PathBuf},
     process::Stdio,
+    sync::RwLock,
 };
 
 use tokio::{
@@ -14,7 +15,16 @@ use rmcp::{
     ErrorData as McpError, handler::server::wrapper::Parameters, schemars::JsonSchema, tool,
     tool_router,
 };
-use serde::Deserialize;
+use rmcp::{RoleServer, service::RequestContext};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+struct WorkspaceApproval {
+    #[schemars(description = "The exact absolute workspace path the user approved")]
+    approved_path: String,
+}
+
+rmcp::elicit_safe!(WorkspaceApproval);
 
 const DEFAULT_MAX_READ_BYTES: usize = 1_048_576;
 const MAX_READ_BYTES: usize = 8 * 1_048_576;
@@ -25,9 +35,9 @@ const MAX_EXEC_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_EXEC_OUTPUT_BYTES: usize = 256 * 1_024;
 const MAX_EXEC_OUTPUT_BYTES: usize = 4 * 1_048_576;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FileSystemServer {
-    root: PathBuf,
+    root: RwLock<PathBuf>,
 }
 
 impl FileSystemServer {
@@ -39,25 +49,44 @@ impl FileSystemServer {
                 format!("workspace root is not a directory: {}", root.display()),
             ));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root: RwLock::new(root),
+        })
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn root(&self) -> PathBuf {
+        self.root
+            .read()
+            .expect("workspace root lock poisoned")
+            .clone()
+    }
+
+    fn set_root(&self, root: impl AsRef<Path>) -> io::Result<()> {
+        let root = fs::canonicalize(root)?;
+        if !root.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                format!("workspace root is not a directory: {}", root.display()),
+            ));
+        }
+        *self.root.write().expect("workspace root lock poisoned") = root;
+        Ok(())
     }
 
     fn resolve_existing(&self, input: &str) -> Result<PathBuf, String> {
         let relative = validate_relative_path(input)?;
-        let path = self.root.join(relative);
+        let root = self.root();
+        let path = root.join(relative);
         let resolved = fs::canonicalize(&path)
             .map_err(|error| format!("cannot resolve '{}': {error}", input))?;
-        self.ensure_inside_root(&resolved)?;
+        self.ensure_inside_root(&root, &resolved)?;
         Ok(resolved)
     }
 
     fn resolve_for_create(&self, input: &str) -> Result<PathBuf, String> {
         let relative = validate_relative_path(input)?;
-        let path = self.root.join(relative);
+        let root = self.root();
+        let path = root.join(relative);
         let mut existing = path.as_path();
         let mut missing = Vec::new();
 
@@ -73,7 +102,7 @@ impl FileSystemServer {
 
         let mut resolved = fs::canonicalize(existing)
             .map_err(|error| format!("cannot resolve parent of '{}': {error}", input))?;
-        self.ensure_inside_root(&resolved)?;
+        self.ensure_inside_root(&root, &resolved)?;
         for component in missing.iter().rev() {
             resolved.push(component);
         }
@@ -89,8 +118,8 @@ impl FileSystemServer {
         }
     }
 
-    fn ensure_inside_root(&self, path: &Path) -> Result<(), String> {
-        if path == self.root || path.starts_with(&self.root) {
+    fn ensure_inside_root(&self, root: &Path, path: &Path) -> Result<(), String> {
+        if path == root || path.starts_with(root) {
             Ok(())
         } else {
             Err(format!(
@@ -101,7 +130,8 @@ impl FileSystemServer {
     }
 
     fn display_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
+        let root = self.root();
+        path.strip_prefix(&root)
             .map(|relative| {
                 let value = relative.to_string_lossy().replace('\\', "/");
                 if value.is_empty() {
@@ -126,6 +156,12 @@ impl FileSystemServer {
             Ok(value)
         }
     }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetWorkspaceRequest {
+    #[schemars(description = "Absolute directory path to use as the new workspace root")]
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -216,6 +252,48 @@ pub struct ExecRequest {
 
 #[tool_router(server_handler)]
 impl FileSystemServer {
+    #[tool(
+        description = "Request user approval and switch the active workspace root to an absolute directory"
+    )]
+    pub async fn set_workspace(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(request): Parameters<SetWorkspaceRequest>,
+    ) -> Result<String, McpError> {
+        let requested_input = Path::new(&request.path);
+        if !requested_input.is_absolute() {
+            return Err(tool_error("workspace path must be absolute"));
+        }
+        let requested = fs::canonicalize(requested_input)
+            .map_err(|error| tool_error(format!("cannot resolve requested workspace: {error}")))?;
+        if !requested.is_dir() {
+            return Err(tool_error(format!(
+                "workspace path is not a directory: {}",
+                requested.display()
+            )));
+        }
+        let requested = requested.to_string_lossy().into_owned();
+        let Some(approval) = context
+            .peer
+            .elicit::<WorkspaceApproval>(format!(
+                "Allow this server to switch its workspace to '{}'? This changes the directory used by read, write, edit, list, grep, and exec.",
+                requested
+            ))
+            .await
+            .map_err(|error| tool_error(format!("workspace approval failed: {error}")))?
+        else {
+            return Err(tool_error("workspace change was not approved"));
+        };
+        if approval.approved_path != requested {
+            return Err(tool_error(
+                "workspace approval did not match the requested path",
+            ));
+        }
+        self.set_root(&requested)
+            .map_err(|error| tool_error(format!("cannot switch workspace: {error}")))?;
+        Ok(format!("workspace changed to {}", self.root().display()))
+    }
+
     #[tool(description = "Read a UTF-8 text file with stable 1-based line numbers")]
     pub fn read(&self, Parameters(request): Parameters<ReadRequest>) -> Result<String, McpError> {
         let path = self.resolve_existing(&request.path).map_err(tool_error)?;
@@ -431,7 +509,7 @@ impl FileSystemServer {
         .map_err(tool_error)?;
         let mut entries = Vec::new();
         collect_entries(
-            &self.root,
+            &self.root(),
             &path,
             request.recursive.unwrap_or(false),
             max_entries,
@@ -472,8 +550,15 @@ impl FileSystemServer {
             .map_err(tool_error)?;
         let suffix = request.file_suffix.as_deref();
         let mut matches = Vec::new();
-        search_path(&self.root, &path, suffix, &regex, max_results, &mut matches)
-            .map_err(io_tool_error)?;
+        search_path(
+            &self.root(),
+            &path,
+            suffix,
+            &regex,
+            max_results,
+            &mut matches,
+        )
+        .map_err(io_tool_error)?;
         matches.sort_unstable();
         let output = matches
             .into_iter()
@@ -708,6 +793,23 @@ mod tests {
         assert_eq!(
             fs::read_to_string(file).expect("read fixture"),
             "two\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn workspace_requires_an_absolute_path() {
+        assert!(!Path::new("relative/path").is_absolute());
+    }
+
+    #[test]
+    fn workspace_can_switch_after_validation() {
+        let first = tempdir().expect("first temp directory");
+        let second = tempdir().expect("second temp directory");
+        let server = FileSystemServer::new(first.path()).expect("server");
+        server.set_root(second.path()).expect("switch root");
+        assert_eq!(
+            server.root(),
+            fs::canonicalize(second.path()).expect("canonical root")
         );
     }
 

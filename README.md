@@ -9,7 +9,10 @@ cargo run -- C:\path\to\workspace
 ```
 
 The workspace root can also be supplied with `GREDIT_WORKSPACE`. All
-filesystem paths and command working directories must remain inside that root.
+filesystem paths and command working directories remain inside the active
+root. To use another directory, call `set_workspace` with an absolute path;
+the MCP client must support elicitation and the user must approve the exact
+path before the server switches roots.
 
 ## Tools
 
@@ -18,6 +21,7 @@ filesystem paths and command working directories must remain inside that root.
 - `edit` — apply an exact text replacement.
 - `list` — list files and directories.
 - `grep` — search text files with a regular expression.
+- `set_workspace` — request explicit user approval before switching the active workspace directory.
 - `exec` — execute a command in a workspace directory.
 
 ### `exec`
