@@ -13,6 +13,12 @@ fn server() -> (tempfile::TempDir, FileSystemServer) {
     (directory, server)
 }
 
+fn trusted_server() -> (tempfile::TempDir, FileSystemServer) {
+    let directory = tempdir().expect("temp directory");
+    let server = FileSystemServer::new_with_exec(directory.path()).expect("trusted server");
+    (directory, server)
+}
+
 #[test]
 fn rejects_absolute_and_parent_paths() {
     let (_directory, server) = server();
@@ -53,8 +59,24 @@ fn edit_requires_one_match_unless_replace_all() {
 }
 
 #[tokio::test]
-async fn exec_runs_in_workspace_with_embedded_nushell() {
+async fn exec_is_disabled_on_workspace_only_server() {
     let (_directory, server) = server();
+    let error = server
+        .exec(Parameters(ExecRequest {
+            command: "echo hello".to_owned(),
+            working_dir: None,
+            env: None,
+            timeout_ms: Some(5_000),
+            max_output_bytes: Some(1_024),
+        }))
+        .await
+        .expect_err("exec should be disabled");
+    assert!(error.message.contains("exec is disabled"));
+}
+
+#[tokio::test]
+async fn exec_runs_in_workspace_with_embedded_nushell() {
+    let (_directory, server) = trusted_server();
     let result = server
         .exec(Parameters(ExecRequest {
             command: "echo hello".to_owned(),
@@ -72,7 +94,7 @@ async fn exec_runs_in_workspace_with_embedded_nushell() {
 
 #[tokio::test]
 async fn exec_evaluates_nushell_pipeline() {
-    let (_directory, server) = server();
+    let (_directory, server) = trusted_server();
     let result = server
         .exec(Parameters(ExecRequest {
             command: "[3 1 2] | sort | str join ','".to_owned(),
@@ -88,7 +110,7 @@ async fn exec_evaluates_nushell_pipeline() {
 
 #[tokio::test]
 async fn exec_rejects_outside_working_directory() {
-    let (_directory, server) = server();
+    let (_directory, server) = trusted_server();
     let error = server
         .exec(Parameters(ExecRequest {
             command: "echo hello".to_owned(),

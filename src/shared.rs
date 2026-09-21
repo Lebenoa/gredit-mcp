@@ -13,6 +13,8 @@ pub(crate) const DEFAULT_EXEC_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_EXEC_TIMEOUT_MS: u64 = 300_000;
 pub(crate) const DEFAULT_EXEC_OUTPUT_BYTES: usize = 256 * 1_024;
 pub(crate) const MAX_EXEC_OUTPUT_BYTES: usize = 4 * 1_048_576;
+pub(crate) const MAX_GREP_SCAN_FILES: usize = 20_000;
+pub(crate) const MAX_GREP_SCAN_BYTES: u64 = 512 * 1_024 * 1_024;
 
 pub(crate) fn validate_relative_path(input: &str) -> Result<&Path, String> {
     if input.trim().is_empty() {

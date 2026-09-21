@@ -50,8 +50,11 @@ async fn main() -> Result<()> {
     let root = root
         .or_else(|| env::var_os("GREDIT_WORKSPACE").map(PathBuf::from))
         .unwrap_or(env::current_dir().context("failed to determine current directory")?);
-    let server = FileSystemServer::new(&root)
-        .with_context(|| format!("invalid workspace root: {}", root.display()))?;
+    let server = match transport {
+        Transport::Stdio => FileSystemServer::new_with_exec(&root),
+        Transport::Http | Transport::Ws => FileSystemServer::new(&root),
+    }
+    .with_context(|| format!("invalid workspace root: {}", root.display()))?;
     tracing::info!(root = %server.root().display(), "starting gredit MCP server");
 
     match transport {

@@ -16,13 +16,25 @@ use crate::{
 #[derive(Debug)]
 pub struct FileSystemServer {
     pub(crate) root: RwLock<PathBuf>,
+    pub(crate) allow_exec: bool,
 }
 
 impl FileSystemServer {
+    /// Create workspace-only server. `exec` remains disabled.
     pub fn new(root: impl AsRef<Path>) -> io::Result<Self> {
+        Self::from_root(root, false)
+    }
+
+    /// Create server for trusted stdio use where Nushell execution is explicitly allowed.
+    pub fn new_with_exec(root: impl AsRef<Path>) -> io::Result<Self> {
+        Self::from_root(root, true)
+    }
+
+    fn from_root(root: impl AsRef<Path>, allow_exec: bool) -> io::Result<Self> {
         let root = canonical_directory(root)?;
         Ok(Self {
             root: RwLock::new(root),
+            allow_exec,
         })
     }
 
@@ -109,7 +121,7 @@ impl FileSystemServer {
         let Some(approval) = context
             .peer
             .elicit::<WorkspaceApproval>(format!(
-                "Allow this server to switch its workspace to '{}'? This changes the directory used by read, write, edit, list, grep, and exec.",
+                "Allow this server to switch its workspace to '{}'? This changes the directory used by read, write, edit, list, grep, and trusted exec when exec is enabled.",
                 requested
             ))
             .await

@@ -27,7 +27,11 @@ use crate::workspace::FileSystemServer;
 /// provided by rmcp's `StreamableHttpService`. Each session is created from
 /// the workspace root via [`FileSystemServer::new`], so `set_workspace`
 /// approvals are per-session.
+///
+/// Network listeners are intentionally restricted to loopback. Put an
+/// authenticated reverse proxy in front when remote access is required.
 pub async fn serve_http(root: PathBuf, addr: SocketAddr) -> Result<()> {
+    ensure_loopback(addr)?;
     let session_manager = Arc::new(LocalSessionManager::default());
     let service = StreamableHttpService::new(
         move || FileSystemServer::new(&root).map_err(|error| io::Error::other(error.to_string())),
@@ -57,7 +61,9 @@ async fn http_index() -> &'static str {
 /// Serve the MCP protocol over WebSocket, one MCP session per connection.
 ///
 /// Each WebSocket text or binary frame carries one JSON-RPC message.
+/// Network listeners are intentionally restricted to loopback.
 pub async fn serve_ws(root: PathBuf, addr: SocketAddr) -> Result<()> {
+    ensure_loopback(addr)?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind WebSocket listener on {addr}"))?;
@@ -162,6 +168,16 @@ impl Transport<RoleServer> for WsTransport {
     async fn close(&mut self) -> Result<(), Self::Error> {
         let mut sink = self.sink.lock().await;
         sink.close().await
+    }
+}
+
+fn ensure_loopback(addr: SocketAddr) -> Result<()> {
+    if addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "network transports only bind loopback addresses; use an authenticated reverse proxy or SSH tunnel for remote access"
+        ))
     }
 }
 

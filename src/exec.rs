@@ -1,5 +1,13 @@
+use std::sync::{Arc, OnceLock};
+
 use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, tool, tool_router};
-use tokio::time::{Duration, timeout};
+use tokio::{
+    sync::Semaphore,
+    time::{Duration, timeout},
+};
+
+const MAX_CONCURRENT_EXECUTIONS: usize = 4;
+static EXEC_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 use crate::{
     nu_engine,
@@ -20,6 +28,11 @@ impl FileSystemServer {
         &self,
         Parameters(request): Parameters<ExecRequest>,
     ) -> Result<String, McpError> {
+        if !self.allow_exec {
+            return Err(tool_error(
+                "exec is disabled for this server; use trusted stdio mode to enable command execution",
+            ));
+        }
         if request.command.trim().is_empty() {
             return Err(tool_error("command must not be empty"));
         }
@@ -38,6 +51,14 @@ impl FileSystemServer {
             )));
         }
 
+        let semaphore = EXEC_SEMAPHORE
+            .get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_EXECUTIONS)))
+            .clone();
+        let permit = semaphore
+            .acquire_owned()
+            .await
+            .map_err(|_| tool_error("execution capacity is unavailable"))?;
+
         let working_dir = self
             .resolve_directory(request.working_dir.as_deref().unwrap_or("."))
             .map_err(tool_error)?;
@@ -47,6 +68,7 @@ impl FileSystemServer {
         let evaluation = timeout(
             Duration::from_millis(timeout_ms),
             tokio::task::spawn_blocking(move || {
+                let _permit = permit;
                 nu_engine::evaluate(&command, &working_dir, env.as_ref())
             }),
         )

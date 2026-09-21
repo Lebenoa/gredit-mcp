@@ -4,8 +4,8 @@ use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, tool, to
 
 use crate::{
     shared::{
-        DEFAULT_MAX_READ_BYTES, DEFAULT_MAX_RESULTS, MAX_READ_BYTES, MAX_RESULTS, io_tool_error,
-        result_limit, tool_error,
+        DEFAULT_MAX_READ_BYTES, DEFAULT_MAX_RESULTS, MAX_GREP_SCAN_BYTES, MAX_GREP_SCAN_FILES,
+        MAX_READ_BYTES, MAX_RESULTS, io_tool_error, result_limit, tool_error,
     },
     types::{EditRequest, GrepRequest, ListRequest, ReadRequest, WriteRequest},
     workspace::{FileSystemServer, display_relative},
@@ -174,8 +174,19 @@ impl FileSystemServer {
         let suffix = request.file_suffix.as_deref();
         let root = self.root();
         let mut matches = Vec::new();
-        search_path(&root, &path, suffix, &regex, max_results, &mut matches)
-            .map_err(io_tool_error)?;
+        let mut scanned_files = 0usize;
+        let mut scanned_bytes = 0u64;
+        search_path(
+            &root,
+            &path,
+            suffix,
+            &regex,
+            max_results,
+            &mut matches,
+            &mut scanned_files,
+            &mut scanned_bytes,
+        )
+        .map_err(io_tool_error)?;
         matches.sort_unstable();
         let output = matches
             .into_iter()
@@ -217,6 +228,7 @@ fn collect_entries(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // recursive helper threading scan state
 fn search_path(
     root: &Path,
     path: &Path,
@@ -224,17 +236,32 @@ fn search_path(
     regex: &regex::Regex,
     max_results: usize,
     matches: &mut Vec<String>,
+    scanned_files: &mut usize,
+    scanned_bytes: &mut u64,
 ) -> io::Result<()> {
     if matches.len() >= max_results {
         return Ok(());
     }
     let metadata = fs::symlink_metadata(path)?;
+    // Never follow symlinks, neither as directories nor as files.
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
     if metadata.is_dir() {
         let mut children = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
         children.sort_unstable_by_key(|entry| entry.file_name());
         for entry in children {
-            search_path(root, &entry.path(), suffix, regex, max_results, matches)?;
-            if matches.len() >= max_results {
+            search_path(
+                root,
+                &entry.path(),
+                suffix,
+                regex,
+                max_results,
+                matches,
+                scanned_files,
+                scanned_bytes,
+            )?;
+            if matches.len() >= max_results || *scanned_files >= MAX_GREP_SCAN_FILES {
                 break;
             }
         }
@@ -244,6 +271,15 @@ fn search_path(
     {
         return Ok(());
     }
+    if *scanned_files >= MAX_GREP_SCAN_FILES {
+        return Ok(());
+    }
+    *scanned_files += 1;
+    let size = metadata.len();
+    if *scanned_bytes + size > MAX_GREP_SCAN_BYTES {
+        return Ok(());
+    }
+    *scanned_bytes += size;
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(()),
