@@ -27,9 +27,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tempfile = "3"
 
-[patch.crates-io]
-sse-stream = { path = "vendor/sse-stream" }
-
 [profile.release]
 opt-level = 3
 lto = "fat"
