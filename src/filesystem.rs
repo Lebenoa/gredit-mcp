@@ -1,8 +1,12 @@
 use std::{fs, io, path::Path};
 
-use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, tool, tool_router};
+use rmcp::{ErrorData as McpError, Json, handler::server::wrapper::Parameters, tool, tool_router};
 
 use crate::{
+    results::{
+        EditOutput, GrepMatchOutput, GrepOutput, LineOutput, ListEntryOutput, ListOutput,
+        ReadOutput, WriteOutput,
+    },
     shared::{
         DEFAULT_MAX_READ_BYTES, DEFAULT_MAX_RESULTS, MAX_GREP_SCAN_BYTES, MAX_GREP_SCAN_FILES,
         MAX_READ_BYTES, MAX_RESULTS, io_tool_error, result_limit, tool_error,
@@ -14,7 +18,10 @@ use crate::{
 #[tool_router(router = filesystem_router, vis = "pub(crate)")]
 impl FileSystemServer {
     #[tool(description = "Read a UTF-8 text file with stable 1-based line numbers")]
-    pub fn read(&self, Parameters(request): Parameters<ReadRequest>) -> Result<String, McpError> {
+    pub fn read(
+        &self,
+        Parameters(request): Parameters<ReadRequest>,
+    ) -> Result<Json<ReadOutput>, McpError> {
         let path = self.resolve_existing(&request.path).map_err(tool_error)?;
         if !path.is_file() {
             return Err(tool_error(format!("'{}' is not a file", request.path)));
@@ -48,20 +55,24 @@ impl FileSystemServer {
             .enumerate()
             .filter_map(|(index, line)| {
                 let line_number = index + 1;
-                (line_number >= start && line_number <= end)
-                    .then(|| format!("{line_number:>6} | {line}"))
+                (line_number >= start && line_number <= end).then(|| LineOutput {
+                    number: line_number,
+                    text: (*line).to_owned(),
+                })
             })
             .collect::<Vec<_>>();
-        let range = if selected.is_empty() {
-            format!("lines {start}..={end} (file has {} lines)", lines.len())
-        } else {
-            selected.join("\n")
-        };
-        Ok(format!("{}\n{range}", self.display_path(&path)))
+        Ok(Json(ReadOutput {
+            path: display_relative(&self.root(), &path),
+            total_lines: lines.len(),
+            lines: selected,
+        }))
     }
 
     #[tool(description = "Create or overwrite a UTF-8 text file inside the workspace")]
-    pub fn write(&self, Parameters(request): Parameters<WriteRequest>) -> Result<String, McpError> {
+    pub fn write(
+        &self,
+        Parameters(request): Parameters<WriteRequest>,
+    ) -> Result<Json<WriteOutput>, McpError> {
         let path = self.resolve_for_create(&request.path).map_err(tool_error)?;
         if path.exists() && path.is_dir() {
             return Err(tool_error(format!("'{}' is a directory", request.path)));
@@ -77,11 +88,16 @@ impl FileSystemServer {
             )));
         }
         fs::write(&path, request.content.as_bytes()).map_err(io_tool_error)?;
-        Ok(format!("wrote {}", self.display_path(&path)))
+        Ok(Json(WriteOutput {
+            path: display_relative(&self.root(), &path),
+        }))
     }
 
     #[tool(description = "Apply an exact text edit to a UTF-8 file")]
-    pub fn edit(&self, Parameters(request): Parameters<EditRequest>) -> Result<String, McpError> {
+    pub fn edit(
+        &self,
+        Parameters(request): Parameters<EditRequest>,
+    ) -> Result<Json<EditOutput>, McpError> {
         if request.old_string.is_empty() {
             return Err(tool_error("old_string must not be empty"));
         }
@@ -105,20 +121,21 @@ impl FileSystemServer {
             contents.replacen(&request.old_string, &request.new_string, 1)
         };
         fs::write(&path, updated.as_bytes()).map_err(io_tool_error)?;
-        Ok(format!(
-            "edited {} ({} replacement{})",
-            self.display_path(&path),
-            if request.replace_all.unwrap_or(false) {
+        Ok(Json(EditOutput {
+            path: display_relative(&self.root(), &path),
+            replacements: if request.replace_all.unwrap_or(false) {
                 matches
             } else {
                 1
             },
-            if matches == 1 { "" } else { "s" }
-        ))
+        }))
     }
 
     #[tool(description = "List workspace files and directories")]
-    pub fn list(&self, Parameters(request): Parameters<ListRequest>) -> Result<String, McpError> {
+    pub fn list(
+        &self,
+        Parameters(request): Parameters<ListRequest>,
+    ) -> Result<Json<ListOutput>, McpError> {
         let path = self
             .resolve_directory(request.path.as_deref().unwrap_or("."))
             .map_err(tool_error)?;
@@ -139,21 +156,19 @@ impl FileSystemServer {
             &mut entries,
         )
         .map_err(io_tool_error)?;
-        entries.sort_unstable();
-        let output = entries
-            .into_iter()
-            .take(max_entries)
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(if output.is_empty() {
-            format!("{}\n(empty)", self.display_path(&path))
-        } else {
-            format!("{}\n{output}", self.display_path(&path))
-        })
+        entries.sort_unstable_by_key(|entry| (entry.kind != "dir", entry.path.clone()));
+        let entries = entries.into_iter().take(max_entries).collect();
+        Ok(Json(ListOutput {
+            path: display_relative(&root, &path),
+            entries,
+        }))
     }
 
     #[tool(description = "Search text files with a regular expression")]
-    pub fn grep(&self, Parameters(request): Parameters<GrepRequest>) -> Result<String, McpError> {
+    pub fn grep(
+        &self,
+        Parameters(request): Parameters<GrepRequest>,
+    ) -> Result<Json<GrepOutput>, McpError> {
         if request.query.is_empty() {
             return Err(tool_error("query must not be empty"));
         }
@@ -188,16 +203,8 @@ impl FileSystemServer {
         )
         .map_err(io_tool_error)?;
         matches.sort_unstable();
-        let output = matches
-            .into_iter()
-            .take(max_results)
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(if output.is_empty() {
-            "(no matches)".to_owned()
-        } else {
-            output
-        })
+        matches.truncate(max_results);
+        Ok(Json(GrepOutput { matches }))
     }
 }
 
@@ -206,7 +213,7 @@ fn collect_entries(
     directory: &Path,
     recursive: bool,
     max_entries: usize,
-    entries: &mut Vec<String>,
+    entries: &mut Vec<ListEntryOutput>,
 ) -> io::Result<()> {
     let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     children.sort_unstable_by_key(|entry| entry.file_name());
@@ -215,13 +222,13 @@ fn collect_entries(
             break;
         }
         let path = entry.path();
-        let label = if entry.file_type()?.is_dir() {
-            format!("[dir]  {}", display_relative(root, &path))
-        } else {
-            format!("[file] {}", display_relative(root, &path))
-        };
-        entries.push(label);
-        if recursive && entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        let kind = if file_type.is_dir() { "dir" } else { "file" };
+        entries.push(ListEntryOutput {
+            kind: kind.to_owned(),
+            path: display_relative(root, &path),
+        });
+        if recursive && file_type.is_dir() {
             collect_entries(root, &path, recursive, max_entries, entries)?;
         }
     }
@@ -235,7 +242,7 @@ fn search_path(
     suffix: Option<&str>,
     regex: &regex::Regex,
     max_results: usize,
-    matches: &mut Vec<String>,
+    matches: &mut Vec<GrepMatchOutput>,
     scanned_files: &mut usize,
     scanned_bytes: &mut u64,
 ) -> io::Result<()> {
@@ -287,12 +294,11 @@ fn search_path(
     };
     for (index, line) in contents.lines().enumerate() {
         if regex.is_match(line) {
-            matches.push(format!(
-                "{}:{}: {}",
-                display_relative(root, path),
-                index + 1,
-                line
-            ));
+            matches.push(GrepMatchOutput {
+                path: display_relative(root, path),
+                line: index + 1,
+                text: line.to_owned(),
+            });
             if matches.len() >= max_results {
                 break;
             }

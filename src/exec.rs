@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, tool, tool_router};
+use rmcp::{ErrorData as McpError, Json, handler::server::wrapper::Parameters, tool, tool_router};
 use tokio::{
     sync::Semaphore,
     time::{Duration, timeout},
@@ -11,6 +11,7 @@ static EXEC_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 use crate::{
     nu_engine,
+    results::ExecOutput,
     shared::{
         DEFAULT_EXEC_OUTPUT_BYTES, DEFAULT_EXEC_TIMEOUT_MS, MAX_EXEC_OUTPUT_BYTES,
         MAX_EXEC_TIMEOUT_MS, tool_error,
@@ -27,7 +28,7 @@ impl FileSystemServer {
     pub async fn exec(
         &self,
         Parameters(request): Parameters<ExecRequest>,
-    ) -> Result<String, McpError> {
+    ) -> Result<Json<ExecOutput>, McpError> {
         if !self.allow_exec {
             return Err(tool_error(
                 "exec is disabled for this server; use trusted stdio mode to enable command execution",
@@ -89,23 +90,13 @@ impl FileSystemServer {
         };
 
         let (output, truncated) = cap_output(&output, max_output_bytes);
-        let mut response = format!(
-            "engine: embedded-nushell\nworking_dir: {display_working_dir}\nexit_code: 0\nstdout:\n"
-        );
-        if output.is_empty() {
-            response.push_str("(empty)\n");
-        } else {
-            response.push_str(&output);
-            if !output.ends_with('\n') {
-                response.push('\n');
-            }
-        }
-        if truncated {
-            response.push_str(&format!(
-                "output_truncated: true (limit: {max_output_bytes} bytes)\n"
-            ));
-        }
-        Ok(response)
+        Ok(Json(ExecOutput {
+            engine: "embedded-nushell".to_owned(),
+            working_dir: display_working_dir,
+            exit_code: 0,
+            stdout: output,
+            output_truncated: truncated,
+        }))
     }
 }
 

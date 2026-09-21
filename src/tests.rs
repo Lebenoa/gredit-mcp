@@ -19,6 +19,22 @@ fn trusted_server() -> (tempfile::TempDir, FileSystemServer) {
     (directory, server)
 }
 
+/// Unwrap a tool result's `Json<T>` payload, since `Json<T>` is not `Debug`.
+fn expect_ok<T>(result: Result<rmcp::Json<T>, rmcp::ErrorData>, message: &str) -> T {
+    match result {
+        Ok(rmcp::Json(value)) => value,
+        Err(error) => panic!("{message}: {error}"),
+    }
+}
+
+/// Extract the error from a tool result, panicking on success.
+fn expect_err<T>(result: Result<T, rmcp::ErrorData>, message: &str) -> rmcp::ErrorData {
+    match result {
+        Ok(_) => panic!("{message}: expected an error, got Ok"),
+        Err(error) => error,
+    }
+}
+
 #[test]
 fn rejects_absolute_and_parent_paths() {
     let (_directory, server) = server();
@@ -33,25 +49,27 @@ fn edit_requires_one_match_unless_replace_all() {
     let file = server.root().join("example.txt");
     fs::write(&file, "one\none\n").expect("write fixture");
 
-    let error = server
-        .edit(Parameters(EditRequest {
+    let error = expect_err(
+        server.edit(Parameters(EditRequest {
             path: "example.txt".to_owned(),
             old_string: "one".to_owned(),
             new_string: "two".to_owned(),
             replace_all: None,
-        }))
-        .expect_err("ambiguous edit should fail");
+        })),
+        "ambiguous edit should fail",
+    );
     assert!(error.message.contains("matched 2 times"));
 
-    let result = server
-        .edit(Parameters(EditRequest {
+    let result = expect_ok(
+        server.edit(Parameters(EditRequest {
             path: "example.txt".to_owned(),
             old_string: "one".to_owned(),
             new_string: "two".to_owned(),
             replace_all: Some(true),
-        }))
-        .expect("replace all");
-    assert!(result.contains("2 replacements"));
+        })),
+        "replace all",
+    );
+    assert_eq!(result.replacements, 2);
     assert_eq!(
         fs::read_to_string(file).expect("read fixture"),
         "two\ntwo\n"
@@ -61,66 +79,75 @@ fn edit_requires_one_match_unless_replace_all() {
 #[tokio::test]
 async fn exec_is_disabled_on_workspace_only_server() {
     let (_directory, server) = server();
-    let error = server
-        .exec(Parameters(ExecRequest {
-            command: "echo hello".to_owned(),
-            working_dir: None,
-            env: None,
-            timeout_ms: Some(5_000),
-            max_output_bytes: Some(1_024),
-        }))
-        .await
-        .expect_err("exec should be disabled");
+    let error = expect_err(
+        server
+            .exec(Parameters(ExecRequest {
+                command: "echo hello".to_owned(),
+                working_dir: None,
+                env: None,
+                timeout_ms: Some(5_000),
+                max_output_bytes: Some(1_024),
+            }))
+            .await,
+        "exec should be disabled",
+    );
     assert!(error.message.contains("exec is disabled"));
 }
 
 #[tokio::test]
 async fn exec_runs_in_workspace_with_embedded_nushell() {
     let (_directory, server) = trusted_server();
-    let result = server
-        .exec(Parameters(ExecRequest {
-            command: "echo hello".to_owned(),
-            working_dir: None,
-            env: None,
-            timeout_ms: Some(5_000),
-            max_output_bytes: Some(1_024),
-        }))
-        .await
-        .expect("exec");
-    assert!(result.contains("engine: embedded-nushell"));
-    assert!(result.contains("exit_code: 0"));
-    assert!(result.contains("hello"));
+    let result = expect_ok(
+        server
+            .exec(Parameters(ExecRequest {
+                command: "echo hello".to_owned(),
+                working_dir: None,
+                env: None,
+                timeout_ms: Some(5_000),
+                max_output_bytes: Some(1_024),
+            }))
+            .await,
+        "exec",
+    );
+    assert_eq!(result.engine, "embedded-nushell");
+    assert_eq!(result.exit_code, 0);
+    assert!(result.stdout.contains("hello"));
+    assert!(!result.output_truncated);
 }
 
 #[tokio::test]
 async fn exec_evaluates_nushell_pipeline() {
     let (_directory, server) = trusted_server();
-    let result = server
-        .exec(Parameters(ExecRequest {
-            command: "[3 1 2] | sort | str join ','".to_owned(),
-            working_dir: None,
-            env: None,
-            timeout_ms: Some(5_000),
-            max_output_bytes: Some(1_024),
-        }))
-        .await
-        .expect("pipeline exec");
-    assert!(result.contains("1,2,3"));
+    let result = expect_ok(
+        server
+            .exec(Parameters(ExecRequest {
+                command: "[3 1 2] | sort | str join ','".to_owned(),
+                working_dir: None,
+                env: None,
+                timeout_ms: Some(5_000),
+                max_output_bytes: Some(1_024),
+            }))
+            .await,
+        "pipeline exec",
+    );
+    assert!(result.stdout.contains("1,2,3"));
 }
 
 #[tokio::test]
 async fn exec_rejects_outside_working_directory() {
     let (_directory, server) = trusted_server();
-    let error = server
-        .exec(Parameters(ExecRequest {
-            command: "echo hello".to_owned(),
-            working_dir: Some("../".to_owned()),
-            env: None,
-            timeout_ms: None,
-            max_output_bytes: None,
-        }))
-        .await
-        .expect_err("outside working directory should fail");
+    let error = expect_err(
+        server
+            .exec(Parameters(ExecRequest {
+                command: "echo hello".to_owned(),
+                working_dir: Some("../".to_owned()),
+                env: None,
+                timeout_ms: None,
+                max_output_bytes: None,
+            }))
+            .await,
+        "outside working directory should fail",
+    );
     assert!(error.message.contains(".."));
 }
 
@@ -130,35 +157,43 @@ fn write_read_and_grep_work_inside_root() {
     let file = server.root().join("notes.txt");
     fs::write(&file, "alpha\nbeta\n").expect("write fixture");
 
-    let written = server
-        .write(Parameters(WriteRequest {
+    let written = expect_ok(
+        server.write(Parameters(WriteRequest {
             path: "notes.txt".to_owned(),
             content: "one\ntwo\n".to_owned(),
             create_dirs: None,
-        }))
-        .expect("write");
-    assert!(written.contains("notes.txt"));
+        })),
+        "write",
+    );
+    assert!(written.path.contains("notes.txt"));
 
-    let read = server
-        .read(Parameters(ReadRequest {
+    let read = expect_ok(
+        server.read(Parameters(ReadRequest {
             path: "notes.txt".to_owned(),
             start_line: None,
             end_line: None,
             max_bytes: None,
-        }))
-        .expect("read");
-    assert!(read.contains("1 | one"));
+        })),
+        "read",
+    );
+    assert_eq!(read.total_lines, 2);
+    assert_eq!(read.lines[0].number, 1);
+    assert_eq!(read.lines[0].text, "one");
+    assert_eq!(read.lines[1].text, "two");
 
-    let matches = server
-        .grep(Parameters(GrepRequest {
+    let found = expect_ok(
+        server.grep(Parameters(GrepRequest {
             query: "^two".to_owned(),
             path: Some(".".to_owned()),
             file_suffix: None,
             max_results: None,
             case_insensitive: None,
-        }))
-        .expect("grep");
-    assert!(matches.contains("notes.txt"));
+        })),
+        "grep",
+    );
+    assert_eq!(found.matches.len(), 1);
+    assert!(found.matches[0].path.contains("notes.txt"));
+    assert!(found.matches[0].text.starts_with("two"));
 }
 
 // ─── Network transport smoke tests ─────────────────────────────────────────

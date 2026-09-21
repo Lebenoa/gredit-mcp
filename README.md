@@ -41,6 +41,14 @@ cargo run -- --ws --addr 127.0.0.1:8080 C:\path\to\workspace
 - `set_workspace` — request explicit user approval before switching the active workspace directory.
 - `exec` — evaluate Nushell commands in a workspace directory using the embedded engine.
 
+Every tool returns a structured JSON object (delivered in the MCP result's
+`structuredContent`) and advertises its shape as `outputSchema` in
+`tools/list`. For example, `read` yields `{ "path", "totalLines", "lines":
+[{ "number", "text" }] }` and `exec` yields `{ "engine", "workingDir",
+"exitCode", "stdout", "outputTruncated" }`; `list` yields `{ "path",
+"entries": [{ "kind", "path" }] }` and `grep` yields `{ "matches": [{
+"path", "line", "text" }] }`.
+
 ### `exec`
 
 `exec` always evaluates the command with an embedded Nushell engine. No shell

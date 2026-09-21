@@ -5,10 +5,12 @@ use std::{
 };
 
 use rmcp::{
-    RoleServer, handler::server::wrapper::Parameters, service::RequestContext, tool, tool_router,
+    Json, RoleServer, handler::server::wrapper::Parameters, service::RequestContext, tool,
+    tool_router,
 };
 
 use crate::{
+    results::SetWorkspaceOutput,
     shared::{tool_error, validate_relative_path},
     types::{SetWorkspaceRequest, WorkspaceApproval},
 };
@@ -110,7 +112,7 @@ impl FileSystemServer {
         &self,
         context: RequestContext<RoleServer>,
         Parameters(request): Parameters<SetWorkspaceRequest>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<Json<SetWorkspaceOutput>, rmcp::ErrorData> {
         let requested_input = Path::new(&request.path);
         if !requested_input.is_absolute() {
             return Err(tool_error("workspace path must be absolute"));
@@ -136,7 +138,9 @@ impl FileSystemServer {
         }
         self.set_root(&requested)
             .map_err(|error| tool_error(format!("cannot switch workspace: {error}")))?;
-        Ok(format!("workspace changed to {}", self.root().display()))
+        Ok(Json(SetWorkspaceOutput {
+            path: self.root().display().to_string(),
+        }))
     }
 }
 
