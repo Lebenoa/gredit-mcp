@@ -27,11 +27,13 @@ path before the server switches roots.
 ### `exec`
 
 `exec` always evaluates the command with an embedded Nushell engine. No shell
-executable, shell flags, or external Nushell installation are required. Raw
-executables can still be invoked with Nushell's `run-external` syntax.
-`working_dir` is workspace-relative. Optional environment variables, a
-30-second default timeout (five-minute maximum), and bounded output capture
-are supported.
+executable, shell flags, or external Nushell installation are required. For
+structured output from built-in Nushell commands, prefer piping to `to json`,
+for example `ls | to json`. Do not add `to json` to external text commands
+such as `git diff`, because it can truncate their output. Raw executables can
+still be invoked with Nushell's `run-external` syntax. `working_dir` is
+workspace-relative. Optional environment variables, a 30-second default
+timeout (five-minute maximum), and bounded output capture are supported.
 
 Example request shape:
 

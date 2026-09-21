@@ -14,7 +14,7 @@ use crate::{
 #[tool_router(router = exec_router, vis = "pub(crate)")]
 impl FileSystemServer {
     #[tool(
-        description = "Evaluate a Nushell command in the workspace using the embedded Nushell engine"
+        description = "Evaluate a Nushell command with the embedded engine. For structured output from built-in Nushell commands, prefer piping to 'to json' (for example, 'ls | to json'); do not use it for external text commands such as 'git diff', because it can truncate their output."
     )]
     pub async fn exec(
         &self,
