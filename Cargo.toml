@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-nu-cli = { version = "0.115.1", default-features = false }
 nu-cmd-lang = { version = "0.115.1" }
 nu-command = { version = "0.115.1", default-features = false, features = ["os"] }
 nu-engine = { version = "0.115.1", default-features = false, features = ["os"] }

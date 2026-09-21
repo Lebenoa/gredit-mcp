@@ -1633,7 +1633,6 @@ name = "gredit-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "nu-cli",
  "nu-cmd-lang",
  "nu-command",
  "nu-engine",
@@ -2061,15 +2060,6 @@ name = "is_debug"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fe266d2e243c931d8190177f20bf7f24eed45e96f39e87dc49a27b32d12d407"
-
-[[package]]
-name = "is_executable"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -2745,42 +2735,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "nu-cli"
-version = "0.115.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd226bb503d9171584770c79a3f6af6926ba7c864eb8a3b0e46844905b1235f9"
-dependencies = [
- "chrono",
- "crossterm",
- "fancy-regex",
- "is_executable",
- "log",
- "lru",
- "lscolors",
- "miette 7.6.0",
- "nu-ansi-term",
- "nu-cmd-base",
- "nu-color-config",
- "nu-command",
- "nu-config",
- "nu-engine",
- "nu-experimental",
- "nu-glob",
- "nu-parser",
- "nu-path",
- "nu-protocol",
- "nu-utils",
- "nucleo-matcher",
- "percent-encoding",
- "reedline",
- "strum",
- "sysinfo",
- "unicode-segmentation",
- "uuid",
- "which",
 ]
 
 [[package]]

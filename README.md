@@ -27,7 +27,8 @@ path before the server switches roots.
 ### `exec`
 
 `exec` always evaluates the command with an embedded Nushell engine. No shell
-executable, shell flags, or external Nushell installation are required.
+executable, shell flags, or external Nushell installation are required. Raw
+executables can still be invoked with Nushell's `run-external` syntax.
 `working_dir` is workspace-relative. Optional environment variables, a
 30-second default timeout (five-minute maximum), and bounded output capture
 are supported.

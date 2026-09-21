@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, path::Path};
 
-use nu_cli::gather_parent_env_vars;
 use nu_cmd_lang::create_default_context;
 use nu_command::add_shell_command_context;
 use nu_engine::eval_block_with_early_return;
@@ -18,9 +17,15 @@ pub(crate) fn evaluate(
 ) -> Result<String, Box<ShellError>> {
     let mut engine_state = create_default_context();
     engine_state = add_shell_command_context(engine_state);
-    gather_parent_env_vars(&mut engine_state, working_dir);
+    for (name, value) in std::env::vars() {
+        engine_state.add_env_var(name, Value::string(value, Span::unknown()));
+    }
+    engine_state.add_env_var(
+        "PWD".to_owned(),
+        Value::string(working_dir.to_string_lossy(), Span::unknown()),
+    );
 
-    let mut stack = Stack::new();
+    let mut stack = Stack::new().capture_all().suppress_stdin();
     stack.set_cwd(working_dir)?;
     if let Some(env) = env {
         for (name, value) in env {
