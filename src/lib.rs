@@ -1,6 +1,7 @@
 mod exec;
 mod filesystem;
 mod handler;
+mod nu_engine;
 mod shared;
 #[cfg(test)]
 mod tests;

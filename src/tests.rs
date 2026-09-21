@@ -53,13 +53,11 @@ fn edit_requires_one_match_unless_replace_all() {
 }
 
 #[tokio::test]
-async fn exec_runs_in_workspace_with_requested_shell() {
+async fn exec_runs_in_workspace_with_embedded_nushell() {
     let (_directory, server) = server();
     let result = server
         .exec(Parameters(ExecRequest {
-            command: "Write-Output hello".to_owned(),
-            shell: Some("pwsh".to_owned()),
-            shell_args: None,
+            command: "echo hello".to_owned(),
             working_dir: None,
             env: None,
             timeout_ms: Some(5_000),
@@ -67,8 +65,25 @@ async fn exec_runs_in_workspace_with_requested_shell() {
         }))
         .await
         .expect("exec");
+    assert!(result.contains("engine: embedded-nushell"));
     assert!(result.contains("exit_code: 0"));
     assert!(result.contains("hello"));
+}
+
+#[tokio::test]
+async fn exec_evaluates_nushell_pipeline() {
+    let (_directory, server) = server();
+    let result = server
+        .exec(Parameters(ExecRequest {
+            command: "[3 1 2] | sort | str join ','".to_owned(),
+            working_dir: None,
+            env: None,
+            timeout_ms: Some(5_000),
+            max_output_bytes: Some(1_024),
+        }))
+        .await
+        .expect("pipeline exec");
+    assert!(result.contains("1,2,3"));
 }
 
 #[tokio::test]
@@ -76,9 +91,7 @@ async fn exec_rejects_outside_working_directory() {
     let (_directory, server) = server();
     let error = server
         .exec(Parameters(ExecRequest {
-            command: "Write-Output hello".to_owned(),
-            shell: Some("pwsh".to_owned()),
-            shell_args: None,
+            command: "echo hello".to_owned(),
             working_dir: Some("../".to_owned()),
             env: None,
             timeout_ms: None,

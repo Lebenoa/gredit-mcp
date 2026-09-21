@@ -79,23 +79,16 @@ pub struct GrepRequest {
 
 /// Parameters for the `exec` tool.
 ///
-/// The command is executed as a single argument to the selected shell, not
-/// interpolated by this server. By default the invocation is `nu -c <command>`.
+/// The command is evaluated by the embedded Nushell engine.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecRequest {
-    #[schemars(description = "Command string passed to the selected shell")]
+    #[schemars(description = "Nushell command or script to evaluate")]
     pub command: String,
-    #[schemars(description = "Shell executable; defaults to 'nu' (examples: pwsh, bash, sh)")]
-    pub shell: Option<String>,
-    #[schemars(
-        description = "Optional arguments inserted before the command; defaults to '-c' (pwsh uses '-Command')"
-    )]
-    pub shell_args: Option<Vec<String>>,
     #[schemars(
         description = "Workspace-relative working directory; defaults to the workspace root"
     )]
     pub working_dir: Option<String>,
-    #[schemars(description = "Additional environment variables for the child process")]
+    #[schemars(description = "Additional environment variables for the command")]
     pub env: Option<BTreeMap<String, String>>,
     #[schemars(description = "Execution timeout in milliseconds")]
     pub timeout_ms: Option<u64>,
