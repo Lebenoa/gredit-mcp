@@ -130,6 +130,33 @@ pub async fn serve_ws(
     }
 }
 
+struct WebSocketBearerAuth(String);
+
+impl tokio_tungstenite::tungstenite::handshake::server::Callback for WebSocketBearerAuth {
+    #[allow(clippy::result_large_err)]
+    fn on_request(
+        self,
+        request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+        response: tokio_tungstenite::tungstenite::handshake::server::Response,
+    ) -> Result<
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+    > {
+        if request
+            .headers()
+            .get(AUTHORIZATION)
+            .is_some_and(|header| authorized(header.as_bytes(), &self.0))
+        {
+            Ok(response)
+        } else {
+            Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Some("missing or invalid bearer token".to_owned()))
+                .expect("valid unauthorized response"))
+        }
+    }
+}
+
 async fn handle_ws_connection(
     root: PathBuf,
     stream: tokio::net::TcpStream,
@@ -137,25 +164,7 @@ async fn handle_ws_connection(
     allow_exec: bool,
 ) -> Result<()> {
     let socket = if let Some(token) = bearer_token {
-        tokio_tungstenite::accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                if request
-                    .headers()
-                    .get(AUTHORIZATION)
-                    .is_some_and(|header| authorized(header.as_bytes(), &token))
-                {
-                    Ok(response)
-                } else {
-                    Err(tokio_tungstenite::tungstenite::http::Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .body(Some("missing or invalid bearer token".to_owned()))
-                        .expect("valid unauthorized response"))
-                }
-            },
-        )
-        .await?
+        tokio_tungstenite::accept_hdr_async(stream, WebSocketBearerAuth(token)).await?
     } else {
         tokio_tungstenite::accept_async(stream).await?
     };
