@@ -1,110 +1,136 @@
 # gredit-mcp
 
-`gredit-mcp` is a Model Context Protocol (MCP) server that gives an MCP client workspace-scoped file tools and, in trusted stdio mode, an embedded Nushell command runner. It supports stdio, Streamable HTTP with SSE, and WebSocket transports.
+A Model Context Protocol (MCP) server for inspecting and editing a project workspace. It exposes structured file tools, ripgrep-powered search, and an embedded Nushell runner for trusted clients.
 
-## Requirements
+- **Read, write, and edit** UTF-8 files without leaving the MCP client.
+- **List and search** workspace files; search respects `.gitignore` and standard ripgrep filters.
+- **Run Nushell** in the workspace when the client connection is trusted.
+- **Use stdio, Streamable HTTP, or WebSocket** transports.
 
-- Rust and Cargo with support for the Rust 2024 edition.
-- An MCP client that can connect using one of the transports below.
+## Install
 
-## Build and run
+Download the executable for your platform from [GitHub Releases](https://github.com/Lebenoa/gredit-mcp/releases/latest):
 
-Run the server over stdio, using the given directory as its workspace:
+- Windows: `gredit-mcp.exe`
+- Linux: `gredit-mcp`
+
+Or build from source with Rust and Cargo (Rust 2024 edition support):
+
+```sh
+cargo build --locked --release
+```
+
+The executable is in `target/release/` (`gredit-mcp.exe` on Windows).
+
+## Quick start: stdio
+
+Stdio is the default transport and is the simplest option for a local MCP client. Start the server with an existing workspace directory:
 
 ```powershell
 cargo run --release -- C:\path\to\workspace
 ```
 
-If no directory is provided, `gredit-mcp` uses `GREDIT_WORKSPACE`, if set, or the current directory. The workspace must be an existing directory.
-
-To build the release executable without starting it:
+With a downloaded Windows executable:
 
 ```powershell
-cargo build --locked --release
+C:\path\to\gredit-mcp.exe C:\path\to\workspace
 ```
 
-The executable is written to `target\release\gredit-mcp.exe` on Windows (or `target/release/gredit-mcp` on Unix-like systems).
+If the workspace argument is omitted, the server uses `GREDIT_WORKSPACE` when set, otherwise the process's current directory.
 
-### Configure an MCP client for stdio
+### MCP client configuration
 
-For clients that use the `mcpServers` JSON configuration format, add an entry like this and replace both paths with local absolute paths:
+For clients that accept the common `mcpServers` JSON format, configure a stdio server like this. Replace both paths with local absolute paths:
 
 ```json
 {
   "mcpServers": {
     "gredit": {
-      "command": "cargo",
-      "args": [
-        "run", "--quiet",
-        "--manifest-path", "C:\\path\\to\\gredit-mcp\\Cargo.toml",
-        "--",
-        "C:\\path\\to\\workspace"
-      ]
+      "command": "C:\\path\\to\\gredit-mcp.exe",
+      "args": ["C:\\path\\to\\workspace"]
     }
   }
 }
 ```
 
-You can use the built executable instead of Cargo by setting `command` to its full path and `args` to the workspace path. Client configuration locations and formats vary; use your MCP client's documentation.
+You can use Cargo instead of a downloaded executable by setting `command` to `cargo` and `args` to `run`, `--quiet`, `--manifest-path`, the path to this repository's `Cargo.toml`, `--`, and the workspace path. Client configuration locations vary; follow your MCP client's documentation.
+
+## Tools
+
+All file and directory arguments are relative to the active workspace. Absolute paths and `..` components are rejected, and resolved file-tool paths must remain inside the workspace. Tool results are structured JSON with output schemas advertised through MCP `tools/list`.
+
+| Tool | Purpose | Common arguments |
+| --- | --- | --- |
+| `read` | Read a UTF-8 text file with 1-based line numbers. | `path`; optional `start_line`, `end_line`, `max_bytes` |
+| `write` | Create or overwrite a UTF-8 text file. | `path`, `content`; optional `create_dirs` |
+| `edit` | Replace exact text in a file. By default, the old text must match exactly once. | `path`, `old_string`, `new_string`; optional `replace_all` |
+| `list` | List directory entries, optionally recursively. | optional `path`, `recursive`, `max_entries` |
+| `grep` | Search text files with ripgrep's embedded search engine. | `query`; optional `path`, `file_suffix`, `max_results`, `case_insensitive` |
+| `set_workspace` | Switch to another existing workspace after user approval. | absolute directory `path` |
+| `exec` | Evaluate a Nushell command in the active workspace. | `command`; optional `working_dir`, `env`, `timeout_ms`, `max_output_bytes` |
+
+`grep` respects standard ignore rules such as `.gitignore`, skips hidden files and symlinks, and returns matching paths, line numbers, and line text.
+
+### Changing the workspace
+
+`set_workspace` asks the connected MCP client to approve the exact canonical path before switching. The client must support MCP elicitation. If approval is declined, unavailable, or does not match the requested path, the current workspace is unchanged. Network sessions keep their workspace state separate.
 
 ## Transports
 
-Stdio is the default transport. Network transports are opt-in:
+### Stdio
+
+Stdio is the default. It runs one local MCP server process per client configuration and enables `exec` because the process is launched by the client directly. Only configure it for clients you trust.
+
+### Streamable HTTP
 
 ```powershell
-# Streamable HTTP with SSE at http://127.0.0.1:3000/mcp
 cargo run --release -- --http --addr 127.0.0.1:3000 C:\path\to\workspace
+```
 
-# WebSocket at ws://127.0.0.1:8080
+The MCP endpoint is `http://127.0.0.1:3000/mcp`. It supports JSON-RPC requests over `POST` and an SSE stream over `GET` with `Accept: text/event-stream`. The default address is `127.0.0.1:3000`.
+
+### WebSocket
+
+```powershell
 cargo run --release -- --ws --addr 127.0.0.1:8080 C:\path\to\workspace
 ```
 
-Network clients are unauthenticated by default, and network `exec` is disabled. To enable execution, pass `--allow-remote-exec`. This grants every client that can connect command execution, so use it only on a trusted, isolated loopback setup. For authenticated clients, also set a shared secret and configure the MCP client to send the matching `Authorization` header on every HTTP request or WebSocket upgrade (the client must support custom transport headers):
+The default address is `127.0.0.1:8080`. Each WebSocket connection has its own MCP session, and each frame carries one JSON-RPC message.
+
+`--addr` accepts loopback addresses only. HTTP and WebSocket are unauthenticated by default, and network `exec` is disabled by default.
+
+### Network authentication and command execution
+
+To require a shared bearer token for all HTTP requests or WebSocket upgrades, set `GREDIT_MCP_BEARER_TOKEN`. The MCP client must send `Authorization: Bearer <token>` on every network request. Configure a high-entropy secret outside the command line; for example, in PowerShell:
 
 ```powershell
-$env:GREDIT_MCP_BEARER_TOKEN = "use-a-long-random-secret"
+$env:GREDIT_MCP_BEARER_TOKEN = "replace-with-a-long-random-secret"
+cargo run --release -- --http C:\path\to\workspace
+```
+
+Authentication does **not** enable command execution. To expose `exec` over HTTP or WebSocket, explicitly add `--allow-remote-exec`:
+
+```powershell
 cargo run --release -- --http --allow-remote-exec C:\path\to\workspace
 ```
 
-`--addr` is optional: HTTP defaults to `127.0.0.1:3000`, and WebSocket defaults to `127.0.0.1:8080`. HTTP exposes the MCP Streamable HTTP endpoint at `/mcp` (JSON-RPC via `POST`, streaming via `GET` with `Accept: text/event-stream`). WebSocket creates one MCP session per connection, with each WebSocket frame carrying a JSON-RPC message.
+Without a bearer token, every client that can reach the listener can use the enabled tools, including `exec` when that flag is present. The server binds only to loopback and does not provide TLS; do not expose it to an untrusted network. Use a TLS-terminating authenticated proxy or tunnel for remote access, and do not send bearer tokens over plain HTTP on an untrusted network.
 
-Network listeners bind only to loopback. `--allow-remote-exec` is an explicit opt-in; without it, network `exec` stays disabled even when authentication is configured. When `GREDIT_MCP_BEARER_TOKEN` is set, every HTTP request and WebSocket upgrade must include `Authorization: Bearer <token>`. Without that token, clients on the local machine can use other enabled tools without authentication. Use a high-entropy secret and do not expose the listener to untrusted networks; the built-in transport is plain HTTP/WebSocket without TLS.
+## Nushell execution
 
-## Available tools
+`exec` uses an embedded Nushell engine; a separate Nushell installation is not required. Nushell's `run-external` can launch ordinary programs. **Execution is not a sandbox:** commands and external programs run with the server process's operating-system permissions and may access resources outside the workspace. Treat stdio clients—and any network client granted `exec`—as fully trusted.
 
-All filesystem paths are relative to the active workspace. Absolute paths and paths containing `..` are rejected, and resolved paths must remain inside the workspace.
+The `working_dir` argument is workspace-relative and defaults to the workspace root. Additional environment variables can be passed in `env`. The default timeout is 30 seconds (maximum 5 minutes); output is capped at 256 KiB by default and 4 MiB per stream at most.
 
-| Tool | What it does |
-| --- | --- |
-| `read` | Read a UTF-8 text file, optionally selecting a 1-based line range. |
-| `write` | Create or overwrite a UTF-8 text file; optionally create missing parent directories. |
-| `edit` | Replace an exact, non-empty text string. By default it must match exactly once; set `replace_all` to replace every match. |
-| `list` | List a directory's files and subdirectories, optionally recursively. |
-| `grep` | Search files with ripgrep's embedded search engine; supports regular expressions, optional path, file suffix, result limit, and case-insensitive matching. Respects standard ignore rules (including `.gitignore`) and skips hidden files and symlinks. |
-| `set_workspace` | Request approval to switch to another existing absolute directory. |
-| `exec` | Evaluate a Nushell command in the workspace. Available only over stdio. |
-
-Tool results are structured JSON, and each tool advertises an output schema through MCP `tools/list`.
-
-### Workspace approval
-
-`set_workspace` asks the connected MCP client to elicit approval for the exact canonical directory path before changing the active root. The client must support MCP elicitation and the user must approve the exact requested path. A rejected, unavailable, or mismatched approval leaves the workspace unchanged. Network sessions manage their workspace independently.
-
-### Nushell execution and trust
-
-In stdio mode, `exec` evaluates commands using the embedded Nushell engine; it does not require a separately installed Nushell executable. Nushell's `run-external` syntax can invoke external programs, so treat stdio access as trusted command execution and connect only clients you trust. For network transports, `exec` is disabled by default. Enable it with `--allow-remote-exec`; the flag grants execution to any client unless `GREDIT_MCP_BEARER_TOKEN` is also configured to require authentication.
-
-The `working_dir` argument is workspace-relative and defaults to the workspace root. Optional environment variables can be supplied with `env`. Execution has a 30-second default timeout (5-minute maximum) and bounded output capture (256 KiB by default, up to 4 MiB per stream).
-
-For structured results from built-in Nushell commands, pipe to `to json`, for example:
+For structured output from built-in Nushell commands, pipe to `to json`:
 
 ```nushell
 ls | to json
 ```
 
-Do not pipe external text output such as `git diff` to `to json`; it can truncate the output. External programs can still be run directly with Nushell's `run-external` syntax.
+Do not pipe external text output such as `git diff` to `to json`; that can truncate the output. External programs can still be run with `run-external` syntax.
 
-Example `exec` tool arguments:
+Example tool arguments:
 
 ```json
 {
@@ -114,17 +140,21 @@ Example `exec` tool arguments:
 }
 ```
 
-## Limits and defaults
+## Limits
 
-- `read`: 1 MiB maximum file size by default; `max_bytes` can be set up to 8 MiB.
-- `list`: up to 100 entries by default; `max_entries` can be set up to 1,000.
-- `grep`: up to 100 matching lines by default; `max_results` can be set up to 1,000. A scan is also capped at 20,000 files and 512 MiB. It follows ripgrep's default ignore and hidden-file behavior.
-- `exec`: 30-second default timeout, at most 5 minutes; output capture defaults to 256 KiB and is capped at 4 MiB per stream.
+| Tool | Default | Maximum |
+| --- | --- | --- |
+| `read` | 1 MiB per file | 8 MiB (`max_bytes`) |
+| `list` | 100 entries | 1,000 (`max_entries`) |
+| `grep` | 100 matching lines | 1,000 (`max_results`); 20,000 files and 512 MiB scanned |
+| `exec` | 30-second timeout; 256 KiB output per stream | 5-minute timeout; 4 MiB output per stream |
 
 ## Development
 
-Run the test suite with:
-
-```powershell
-cargo test
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
 ```
+
+Tagged `v*` pushes run the same checks, build Windows and Linux release binaries, and attach them to a GitHub Release.
