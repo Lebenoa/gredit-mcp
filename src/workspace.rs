@@ -27,9 +27,14 @@ impl FileSystemServer {
         Self::from_root(root, false)
     }
 
-    /// Create server for trusted stdio use where Nushell execution is explicitly allowed.
+    /// Create a server with optional Nushell execution.
     pub fn new_with_exec(root: impl AsRef<Path>) -> io::Result<Self> {
-        Self::from_root(root, true)
+        Self::with_exec(root, true)
+    }
+
+    /// Create a server and explicitly set whether Nushell execution is allowed.
+    pub fn with_exec(root: impl AsRef<Path>, allow_exec: bool) -> io::Result<Self> {
+        Self::from_root(root, allow_exec)
     }
 
     fn from_root(root: impl AsRef<Path>, allow_exec: bool) -> io::Result<Self> {

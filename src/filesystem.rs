@@ -1,5 +1,8 @@
 use std::{fs, io, path::Path};
 
+use grep_regex::RegexMatcherBuilder;
+use grep_searcher::{SearcherBuilder, sinks::Bytes as BytesSink};
+use ignore::WalkBuilder;
 use rmcp::{ErrorData as McpError, Json, handler::server::wrapper::Parameters, tool, tool_router};
 
 use crate::{
@@ -172,9 +175,9 @@ impl FileSystemServer {
         if request.query.is_empty() {
             return Err(tool_error("query must not be empty"));
         }
-        let regex = regex::RegexBuilder::new(&request.query)
+        let matcher = RegexMatcherBuilder::new()
             .case_insensitive(request.case_insensitive.unwrap_or(false))
-            .build()
+            .build(&request.query)
             .map_err(|error| tool_error(format!("invalid regular expression: {error}")))?;
         let max_results = result_limit(
             request.max_results,
@@ -191,21 +194,66 @@ impl FileSystemServer {
         let mut matches = Vec::new();
         let mut scanned_files = 0usize;
         let mut scanned_bytes = 0u64;
-        search_path(
-            &root,
-            &path,
-            suffix,
-            &regex,
-            max_results,
-            &mut matches,
-            &mut scanned_files,
-            &mut scanned_bytes,
-        )
-        .map_err(io_tool_error)?;
+        let mut walker = WalkBuilder::new(&path);
+        walker
+            .standard_filters(true)
+            .follow_links(false)
+            .sort_by_file_name(|a, b| a.cmp(b));
+        for entry in walker.build() {
+            let entry = entry.map_err(ignore_tool_error)?;
+            let entry_path = entry.path();
+            if !entry.file_type().is_some_and(|kind| kind.is_file())
+                || suffix.is_some_and(|suffix| !entry_path.to_string_lossy().ends_with(suffix))
+            {
+                continue;
+            }
+            if scanned_files >= MAX_GREP_SCAN_FILES {
+                break;
+            }
+            scanned_files += 1;
+            let size = entry.metadata().map_err(ignore_tool_error)?.len();
+            if scanned_bytes + size > MAX_GREP_SCAN_BYTES {
+                continue;
+            }
+            scanned_bytes += size;
+
+            let mut searcher = SearcherBuilder::new()
+                .line_number(true)
+                .binary_detection(grep_searcher::BinaryDetection::quit(b'\0'))
+                .build();
+            let mut sink = BytesSink(|line_number, bytes: &[u8]| {
+                let text = match std::str::from_utf8(bytes) {
+                    Ok(text) => text.trim_end_matches(['\r', '\n']).to_owned(),
+                    Err(error) if error.error_len().is_none() => String::from_utf8_lossy(bytes)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_owned(),
+                    Err(_) => return Ok(true),
+                };
+                matches.push(GrepMatchOutput {
+                    path: display_relative(&root, entry_path),
+                    line: line_number as usize,
+                    text,
+                });
+                Ok(matches.len() < max_results)
+            });
+            searcher
+                .search_path(&matcher, entry_path, &mut sink)
+                .map_err(io_tool_error)?;
+            if matches.len() >= max_results {
+                break;
+            }
+        }
         matches.sort_unstable();
-        matches.truncate(max_results);
         Ok(Json(GrepOutput { matches }))
     }
+}
+
+fn ignore_tool_error(error: ignore::Error) -> McpError {
+    let message = error.to_string();
+    let io_error = error
+        .into_io_error()
+        .unwrap_or_else(|| io::Error::other(message));
+    io_tool_error(io_error)
 }
 
 fn collect_entries(
@@ -230,78 +278,6 @@ fn collect_entries(
         });
         if recursive && file_type.is_dir() {
             collect_entries(root, &path, recursive, max_entries, entries)?;
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)] // recursive helper threading scan state
-fn search_path(
-    root: &Path,
-    path: &Path,
-    suffix: Option<&str>,
-    regex: &regex::Regex,
-    max_results: usize,
-    matches: &mut Vec<GrepMatchOutput>,
-    scanned_files: &mut usize,
-    scanned_bytes: &mut u64,
-) -> io::Result<()> {
-    if matches.len() >= max_results {
-        return Ok(());
-    }
-    let metadata = fs::symlink_metadata(path)?;
-    // Never follow symlinks, neither as directories nor as files.
-    if metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-    if metadata.is_dir() {
-        let mut children = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
-        children.sort_unstable_by_key(|entry| entry.file_name());
-        for entry in children {
-            search_path(
-                root,
-                &entry.path(),
-                suffix,
-                regex,
-                max_results,
-                matches,
-                scanned_files,
-                scanned_bytes,
-            )?;
-            if matches.len() >= max_results || *scanned_files >= MAX_GREP_SCAN_FILES {
-                break;
-            }
-        }
-        return Ok(());
-    }
-    if !metadata.is_file() || suffix.is_some_and(|suffix| !path.to_string_lossy().ends_with(suffix))
-    {
-        return Ok(());
-    }
-    if *scanned_files >= MAX_GREP_SCAN_FILES {
-        return Ok(());
-    }
-    *scanned_files += 1;
-    let size = metadata.len();
-    if *scanned_bytes + size > MAX_GREP_SCAN_BYTES {
-        return Ok(());
-    }
-    *scanned_bytes += size;
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    for (index, line) in contents.lines().enumerate() {
-        if regex.is_match(line) {
-            matches.push(GrepMatchOutput {
-                path: display_relative(root, path),
-                line: index + 1,
-                text: line.to_owned(),
-            });
-            if matches.len() >= max_results {
-                break;
-            }
         }
     }
     Ok(())

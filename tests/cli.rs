@@ -1,7 +1,6 @@
 use std::process::Command;
 
-/// The `--http`/`--ws` flags select network transports; anything else is
-/// rejected up front.
+/// Transport flags are accepted; unrecognized flags are rejected up front.
 #[test]
 fn cli_rejects_unknown_flags() {
     let workspace = std::env::temp_dir();
@@ -17,6 +16,21 @@ fn cli_rejects_unknown_flags() {
 
 /// Without transport flags the server must still start on stdio; a missing
 /// workspace error is fine, but an unknown flag must never be accepted.
+#[test]
+fn cli_accepts_remote_exec_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_gredit-mcp"))
+        .args(["--http", "--allow-remote-exec", "--addr", "not-an-address"])
+        .output()
+        .expect("run binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("unknown flag"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("invalid socket address"),
+        "stderr: {stderr}"
+    );
+}
+
+/// Without transport flags the server must still accept the workspace positional.
 #[test]
 fn cli_accepts_workspace_positional() {
     let output = Command::new(env!("CARGO_BIN_EXE_gredit-mcp"))

@@ -196,6 +196,31 @@ fn write_read_and_grep_work_inside_root() {
     assert!(found.matches[0].text.starts_with("two"));
 }
 
+#[test]
+fn grep_respects_ignore_and_hidden_file_defaults() {
+    let (_directory, server) = server();
+    let root = server.root();
+    fs::write(root.join("visible.txt"), "needle visible\n").expect("write visible fixture");
+    fs::write(root.join(".hidden.txt"), "needle hidden\n").expect("write hidden fixture");
+    fs::write(root.join("ignored.txt"), "needle ignored\n").expect("write ignored fixture");
+    fs::create_dir(root.join(".git")).expect("create git directory");
+    fs::write(root.join(".gitignore"), "ignored.txt\n").expect("write ignore file");
+
+    let found = expect_ok(
+        server.grep(Parameters(GrepRequest {
+            query: "needle".to_owned(),
+            path: None,
+            file_suffix: Some(".txt".to_owned()),
+            max_results: None,
+            case_insensitive: None,
+        })),
+        "grep with defaults",
+    );
+
+    assert_eq!(found.matches.len(), 1, "matches: {:?}", found.matches);
+    assert!(found.matches[0].path.ends_with("visible.txt"));
+}
+
 // ─── Network transport smoke tests ─────────────────────────────────────────
 
 fn free_addr() -> SocketAddr {
@@ -301,7 +326,12 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 async fn streamable_http_serves_initialize() {
     let directory = tempdir().expect("temp directory");
     let addr = free_addr();
-    let handle = tokio::spawn(network::serve_http(directory.path().to_path_buf(), addr));
+    let handle = tokio::spawn(network::serve_http(
+        directory.path().to_path_buf(),
+        addr,
+        None,
+        false,
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (status, headers, body) = http_request(addr, "POST", "/mcp", &[], INITIALIZE).await;
@@ -309,6 +339,64 @@ async fn streamable_http_serves_initialize() {
     assert!(headers.contains_key("mcp-session-id"));
     assert!(body.contains("\"serverInfo\""));
     assert!(body.contains("\"name\""));
+    let session_id = headers
+        .get("mcp-session-id")
+        .map(String::as_str)
+        .expect("session id header");
+    let call_headers = [("MCP-Session-Id", session_id)];
+    let (status, _, call) = http_request(
+        addr,
+        "POST",
+        "/mcp",
+        &call_headers,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"exec","arguments":{"command":"echo hello"}}}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected tools/call response: {call}");
+    assert!(
+        call.contains("exec is disabled"),
+        "exec not disabled: {call}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn streamable_http_requires_bearer_token_and_enables_exec_for_trusted_client() {
+    let directory = tempdir().expect("temp directory");
+    let addr = free_addr();
+    let handle = tokio::spawn(network::serve_http(
+        directory.path().to_path_buf(),
+        addr,
+        Some("test-secret".to_owned()),
+        true,
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (status, _, _) = http_request(addr, "POST", "/mcp", &[], INITIALIZE).await;
+    assert_eq!(status, 401);
+
+    let auth = [("Authorization", "Bearer test-secret")];
+    let (status, headers, body) = http_request(addr, "POST", "/mcp", &auth, INITIALIZE).await;
+    assert_eq!(status, 200, "unexpected response: {body}");
+    let session_id = headers
+        .get("mcp-session-id")
+        .cloned()
+        .expect("session id header");
+    let trusted_headers = [
+        ("Authorization", "Bearer test-secret"),
+        ("MCP-Session-Id", session_id.as_str()),
+    ];
+    let (status, _, body) = http_request(
+        addr,
+        "POST",
+        "/mcp",
+        &trusted_headers,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"exec","arguments":{"command":"echo hello"}}}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "unexpected tools/call response: {body}");
+    assert!(body.contains("hello"), "exec did not run: {body}");
 
     handle.abort();
 }
@@ -317,7 +405,12 @@ async fn streamable_http_serves_initialize() {
 async fn streamable_http_sse_get_streams() {
     let directory = tempdir().expect("temp directory");
     let addr = free_addr();
-    let handle = tokio::spawn(network::serve_http(directory.path().to_path_buf(), addr));
+    let handle = tokio::spawn(network::serve_http(
+        directory.path().to_path_buf(),
+        addr,
+        None,
+        false,
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (status, headers, _body) = http_request(addr, "POST", "/mcp", &[], INITIALIZE).await;
@@ -343,13 +436,53 @@ async fn streamable_http_sse_get_streams() {
 }
 
 #[tokio::test]
+async fn websocket_requires_bearer_token_for_upgrade() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let directory = tempdir().expect("temp directory");
+    let addr = free_addr();
+    let handle = tokio::spawn(network::serve_ws(
+        directory.path().to_path_buf(),
+        addr,
+        Some("test-secret".to_owned()),
+        true,
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let key = BASE64.encode([0xAB; 16]);
+    let upgrade = format!(
+        "GET / HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(upgrade.as_bytes())
+        .await
+        .expect("upgrade write");
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).await.expect("upgrade read");
+    let response = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "handshake: {response}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_serves_initialize() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let directory = tempdir().expect("temp directory");
     let addr = free_addr();
-    let handle = tokio::spawn(network::serve_ws(directory.path().to_path_buf(), addr));
+    let handle = tokio::spawn(network::serve_ws(
+        directory.path().to_path_buf(),
+        addr,
+        None,
+        false,
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut stream = tokio::time::timeout(

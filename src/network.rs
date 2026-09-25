@@ -4,8 +4,17 @@
 
 use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 
+use subtle::ConstantTimeEq;
+
 use anyhow::{Context, Result};
-use axum::{Router, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use futures_util::{SinkExt, StreamExt};
 use rmcp::{
     RoleServer,
@@ -28,19 +37,31 @@ use crate::workspace::FileSystemServer;
 /// the workspace root via [`FileSystemServer::new`], so `set_workspace`
 /// approvals are per-session.
 ///
-/// Network listeners are intentionally restricted to loopback. Put an
-/// authenticated reverse proxy in front when remote access is required.
-pub async fn serve_http(root: PathBuf, addr: SocketAddr) -> Result<()> {
+/// Network listeners are intentionally restricted to loopback. If a bearer
+/// token is configured, requests must include it and `exec` is enabled.
+pub async fn serve_http(
+    root: PathBuf,
+    addr: SocketAddr,
+    bearer_token: Option<String>,
+    allow_remote_exec: bool,
+) -> Result<()> {
     ensure_loopback(addr)?;
+    let allow_exec = allow_remote_exec;
     let session_manager = Arc::new(LocalSessionManager::default());
     let service = StreamableHttpService::new(
-        move || FileSystemServer::new(&root).map_err(|error| io::Error::other(error.to_string())),
+        move || {
+            FileSystemServer::with_exec(&root, allow_exec)
+                .map_err(|error| io::Error::other(error.to_string()))
+        },
         session_manager,
         StreamableHttpServerConfig::default(),
     );
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/", get(http_index))
         .nest_service("/mcp", service);
+    if let Some(token) = bearer_token {
+        router = router.layer(middleware::from_fn_with_state(token, require_bearer_token));
+    }
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind HTTP listener on {addr}"))?;
@@ -54,16 +75,44 @@ pub async fn serve_http(root: PathBuf, addr: SocketAddr) -> Result<()> {
         .context("HTTP server failed")
 }
 
+async fn require_bearer_token(
+    State(token): State<String>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if headers
+        .get(AUTHORIZATION)
+        .is_some_and(|header| authorized(header.as_bytes(), &token))
+    {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
+    }
+}
+
+fn authorized(header: &[u8], token: &str) -> bool {
+    let expected = format!("Bearer {token}");
+    bool::from(expected.as_bytes().ct_eq(header))
+}
+
 async fn http_index() -> &'static str {
     "gredit-mcp: MCP endpoint at /mcp\n"
 }
 
 /// Serve the MCP protocol over WebSocket, one MCP session per connection.
 ///
-/// Each WebSocket text or binary frame carries one JSON-RPC message.
-/// Network listeners are intentionally restricted to loopback.
-pub async fn serve_ws(root: PathBuf, addr: SocketAddr) -> Result<()> {
+/// Each WebSocket text or binary frame carries one JSON-RPC message. Network
+/// listeners are intentionally restricted to loopback. A configured bearer
+/// token is required in the upgrade request and enables `exec`.
+pub async fn serve_ws(
+    root: PathBuf,
+    addr: SocketAddr,
+    bearer_token: Option<String>,
+    allow_remote_exec: bool,
+) -> Result<()> {
     ensure_loopback(addr)?;
+    let allow_exec = allow_remote_exec;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind WebSocket listener on {addr}"))?;
@@ -72,17 +121,45 @@ pub async fn serve_ws(root: PathBuf, addr: SocketAddr) -> Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
         let root = root.clone();
+        let bearer_token = bearer_token.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_ws_connection(root, stream).await {
+            if let Err(error) = handle_ws_connection(root, stream, bearer_token, allow_exec).await {
                 tracing::warn!(%peer, %error, "WebSocket connection error");
             }
         });
     }
 }
 
-async fn handle_ws_connection(root: PathBuf, stream: tokio::net::TcpStream) -> Result<()> {
-    let socket = tokio_tungstenite::accept_async(stream).await?;
-    let server = FileSystemServer::new(&root)?;
+async fn handle_ws_connection(
+    root: PathBuf,
+    stream: tokio::net::TcpStream,
+    bearer_token: Option<String>,
+    allow_exec: bool,
+) -> Result<()> {
+    let socket = if let Some(token) = bearer_token {
+        tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  response| {
+                if request
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .is_some_and(|header| authorized(header.as_bytes(), &token))
+                {
+                    Ok(response)
+                } else {
+                    Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Some("missing or invalid bearer token".to_owned()))
+                        .expect("valid unauthorized response"))
+                }
+            },
+        )
+        .await?
+    } else {
+        tokio_tungstenite::accept_async(stream).await?
+    };
+    let server = FileSystemServer::with_exec(&root, allow_exec)?;
     let running = rmcp::serve_server(server, WsTransport::new(socket))
         .await
         .context("failed to start WebSocket MCP session")?;

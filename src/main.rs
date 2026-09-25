@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
 
     let mut transport = Transport::Stdio;
     let mut addr: Option<SocketAddr> = None;
+    let mut allow_remote_exec = false;
     let mut root: Option<PathBuf> = None;
 
     let mut args = env::args_os().skip(1);
@@ -33,6 +34,7 @@ async fn main() -> Result<()> {
         match text.as_ref() {
             "--http" => transport = Transport::Http,
             "--ws" => transport = Transport::Ws,
+            "--allow-remote-exec" => allow_remote_exec = true,
             "--addr" => {
                 let value = args
                     .next()
@@ -50,9 +52,13 @@ async fn main() -> Result<()> {
     let root = root
         .or_else(|| env::var_os("GREDIT_WORKSPACE").map(PathBuf::from))
         .unwrap_or(env::current_dir().context("failed to determine current directory")?);
+    if allow_remote_exec && transport == Transport::Stdio {
+        anyhow::bail!("--allow-remote-exec is only valid with --http or --ws");
+    }
+
     let server = match transport {
         Transport::Stdio => FileSystemServer::new_with_exec(&root),
-        Transport::Http | Transport::Ws => FileSystemServer::new(&root),
+        Transport::Http | Transport::Ws => FileSystemServer::with_exec(&root, false),
     }
     .with_context(|| format!("invalid workspace root: {}", root.display()))?;
     tracing::info!(root = %server.root().display(), "starting gredit MCP server");
@@ -67,12 +73,41 @@ async fn main() -> Result<()> {
         }
         Transport::Http => {
             let addr = addr.unwrap_or_else(|| DEFAULT_HTTP_ADDR.parse().expect("static addr"));
-            network::serve_http(root, addr).await?;
+            let token = network_bearer_token()?;
+            if allow_remote_exec {
+                tracing::warn!(
+                    "remote command execution is enabled for network clients; listener is unauthenticated unless GREDIT_MCP_BEARER_TOKEN is set"
+                );
+            } else if token.is_some() {
+                tracing::warn!("bearer authentication is not encrypted without TLS");
+            }
+            network::serve_http(root, addr, token, allow_remote_exec).await?;
         }
         Transport::Ws => {
             let addr = addr.unwrap_or_else(|| DEFAULT_WS_ADDR.parse().expect("static addr"));
-            network::serve_ws(root, addr).await?;
+            let token = network_bearer_token()?;
+            if allow_remote_exec {
+                tracing::warn!(
+                    "remote command execution is enabled for network clients; listener is unauthenticated unless GREDIT_MCP_BEARER_TOKEN is set"
+                );
+            } else if token.is_some() {
+                tracing::warn!("bearer authentication is not encrypted without TLS");
+            }
+            network::serve_ws(root, addr, token, allow_remote_exec).await?;
         }
     }
     Ok(())
+}
+
+fn network_bearer_token() -> Result<Option<String>> {
+    let Some(token) = env::var_os("GREDIT_MCP_BEARER_TOKEN") else {
+        return Ok(None);
+    };
+    let token = token
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("GREDIT_MCP_BEARER_TOKEN must be valid Unicode"))?;
+    if token.is_empty() {
+        anyhow::bail!("GREDIT_MCP_BEARER_TOKEN must not be empty");
+    }
+    Ok(Some(token))
 }

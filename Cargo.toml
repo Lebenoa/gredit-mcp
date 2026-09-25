@@ -8,6 +8,10 @@ publish = false
 anyhow = "1"
 axum = "0.8"
 futures-util = "0.3"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
+subtle = "2"
 nu-cmd-lang = { version = "0.115.1" }
 nu-command = { version = "0.115.1", default-features = false, features = ["os"] }
 nu-engine = { version = "0.115.1", default-features = false, features = ["os"] }
@@ -19,7 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
-regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
